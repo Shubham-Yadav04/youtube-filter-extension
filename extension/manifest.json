@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "My React Vite Extension",
+  "version": "1.0",
+  "description": "A Chrome extension built with React and Vite",
+  "action": {
+    "default_popup": "index.html"
+  },
+ "background": {
+    "service_worker": "background.js",
+    "type":"module"
+  },
+
+   "content_scripts": [
+    {
+      "matches": ["*://www.youtube.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_end"
+    }
+  ],
+  "permissions": ["storage", "tabs", "activeTab", "scripting"],
+  "host_permissions": ["*://www.youtube.com/*"]
+
+}

@@ -1,112 +1,81 @@
 /* eslint-disable no-undef */
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect } from "react";
 
 function HomePage() {
   const [started, setStarted] = useState(false);
   const [constraints, setConstraints] = useState("");
   
   const [edit, setEdit] = useState(0);
+useEffect(() => {
+  (async () => {
+    const { constraints = "", started = false } =
+      await chrome.storage.local.get(["constraints", "started"]);
+    setConstraints(constraints);
+    setStarted(started);
+  })();
+}, []);
 
-  const editRef = useRef(null);
-  useEffect(() => {
-    (async () => {
-   const data = await chrome.storage.local.get(["constraints","started"]);
-      setConstraints(data.constraints);
-      setStarted(data.started || false)
-    })();
-  }, []);
-const handleSave=async()=>{
-  await chrome.storage.local.set({constraints:constraints|| ""},()=>{
-    console.log("data ,saved");
-  })
-      setEdit(0);
-}
+const handleSave = async () => {
+  await chrome.storage.local.set({ constraints });
+  chrome.runtime.sendMessage({ type: "RULE_UPDATED" });
+  setEdit(0);
+};
 
-  const handleStartAndStop = async () => {
-    if (!started) {
-      console.log("starting....")
-      await chrome.storage.local.set({started:true});
-      // chrome.runtime.sendMessage({ type: "START_FILTERING", constraints });
-    } else {
-      await chrome.storage.local.set({started:false})
-      // chrome.runtime.sendMessage({type:"STOP_FILTERING"})
-    }
-  };
+
+const handleStartAndStop = async () => {
+  const newState = !started;
+  setStarted(newState);
+  await chrome.storage.local.set({ started: newState });
+  console.log("sending state change ")
+  chrome.runtime.sendMessage({ action: "STATE_CHANGED", started: newState });
+};
+
 
   return (
-    <div className="w-[300px] min-h-[400px] flex flex-col items-center gap-4">
-      <h1 className="text-lg font-bold w-full text-left px-3 capitalize italic">
-        extnsn
-      </h1>
-
+    <div className="w-[320px] min-h-[420px] bg-gradient-to-b from-gray-900 to-gray-800 text-white p-4 flex flex-col gap-5 font-sans">
+     <h1 className="text-xl font-semibold tracking-wide text-center">
+  Focus Filter
+</h1>
       <button
-        className={`w-[150px] h-[150px] rounded-full text-black text-2xl uppercase tracking-wide font-bold shadow-xl ${
-          !started
-            ? "bg-green-300 shadow-green-500 hover:bg-green-400"
-            : "bg-red-300 shadow-red-500 hover:bg-red-400"
-        }`}
-        onClick={() => {
-          setStarted((prev) => !prev);
-          handleStartAndStop();
-        }}
-      >
-        {started ? "stop" : "start"}
-      </button>
+  className={`w-36 h-36 rounded-full mx-auto text-lg font-bold shadow-xl transition-all duration-300 ${
+    started
+      ? "bg-red-500 hover:bg-red-600 shadow-red-800"
+      : "bg-green-500 hover:bg-green-600 shadow-green-800"
+  }`}
+  onClick={handleStartAndStop}
+>
+  {started ? "STOP" : "START"}
+</button>
 
-      <div className="flex flex-col items-center relative w-full">
-        <h1 className="text-base font-semibold mb-2">
-          describe your constraints 
-        </h1>
+      <div className="bg-gray-700 rounded-xl p-3 shadow-inner flex flex-col gap-2">
+  <div className="flex justify-between items-center">
+    <span className="text-sm font-semibold opacity-80">Constraints</span>
+    <button onClick={() => setEdit(2)} className="text-xs opacity-70 hover:opacity-100">Edit</button>
+  </div>
 
-        <div
-          ref={editRef}
-          className="w-[250px] h-[150px] bg-white border-2 border-black rounded-lg gap-1 flex flex-col p-1 relative"
-        >
-          <h1 className="text-sm font-bold w-full text-left px-2 relative">
-            constraints
-            <button
-              aria-label="Edit constraints"
-              onClick={(e) =>{
-                e.stopPropagation();
-                setEdit(2)
-              }}
-              className="absolute top-1 right-2 p-1"
-              title="Edit"
-            >
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                viewBox="0 0 24 24"
-                className="w-4 h-4"
-                fill="currentColor"
-              >
-                <path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25z"></path>
-                <path d="M20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"></path>
-              </svg>
-            </button>
-          </h1>
+  {edit === 2 ? (
+    <textarea
+      value={constraints}
+      onChange={(e) => setConstraints(e.target.value)}
+      placeholder="Describe allowed content..."
+      className="bg-gray-800 border border-gray-600 rounded-md p-2 text-xs h-20 resize-none focus:outline-none focus:ring-2 focus:ring-purple-500"
+    />
+  ) : (
+    <p className="text-xs text-gray-200 min-h-[60px]">
+      {constraints || "No constraints set"}
+    </p>
+  )}
 
-          {edit === 2 ? (
-            <textarea
-              placeholder="Enter constraints separated by commas"
-              value={constraints}
-              onChange={(e) =>
-                setConstraints(
-                  e.target.value
-                )
-              }
-              className="border p-1 text-xs rounded w-full h-[25px] mb-4"
-            />
-          ) : (
-            <p className="w-full h-[50px] overflow-y-auto px-2 text-xs font-semibold text-left">
-              {constraints ==="" ? "No constraints set" : constraints}
-            </p>
-          )}
+  {edit === 2 && (
+    <button
+      onClick={handleSave}
+      className="self-end bg-purple-600 hover:bg-purple-700 text-xs px-3 py-1 rounded-md"
+    >
+      Save
+    </button>
+  )}
+</div>
 
-          {
-            edit!=0 && <button className="absolute bottom-0 right-1 p-1 text-xs font-bold mt-2 z-10 bg-purple-500 rounded-md" onClick={handleSave}>Save</button>
-          }
-        </div>
-      </div>
     </div>
   );
 }

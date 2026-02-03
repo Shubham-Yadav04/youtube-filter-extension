@@ -1,37 +1,50 @@
-import axios from 'axios'
 /* eslint-disable no-undef */
-// chrome.runtime.onMessage.addListener((message) => {
-//   if (message.type === "START_FILTERING") {
-//     console.log("start message recieved ")
-//     chrome.tabs.query({ url: "*://www.youtube.com/*" }, (tabs) => {
-      
-//       tabs.forEach(tab => {
-//         console.log(tab.id)
-//         console.log("sending message to content ")
-//           chrome.tabs.sendMessage(tab.id, { type:"APPLY_FILTERS" });
-//       });
-//     });
-//   }
-//   if (message.type ==="STOP_FILTERING") {
-//     console.log("stop message recieved ")
-//     chrome.tabs.sendMessage(tab.id,{type:"STOP_FILTERS"})
-//   }
-// });
+import { pipeline, env } from "@xenova/transformers";
+env.backends.onnx.wasm.wasmPaths =
+  "https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/";
 
-chrome.runtime.onMessage.addListener((message,sender,sendResponse)=>{
+env.backends.onnx.wasm.numThreads = 1;
+env.backends.onnx.wasm.simd = true;
+env.allowLocalModels = false;
+env.useBrowserCache = true;
+
+chrome.runtime.onMessage.addListener((msg,sender,sendResponse)=>{
+  console.log("reached back")
+  if(msg.action==="STATE_CHANGED"){
+    // send the event to the current active tab 
+    chrome.tabs.query({active:true,currentWindow:true},(tabs)=>{
+      console.log(tabs)
+      const tabsId= tabs[0].id;
+       // reload the tabs so that the content script is loaded in it 
+      chrome.tabs.sendMessage(tabsId,msg);
+    })
+  }
+})
+
+let embedder;
+
+chrome.runtime.onMessage.addListener(async (msg, sender, sendResponse) => {
+  if (msg.type === "INIT_EMBEDDER") {
+  try{
+ if (!embedder) {
+ embedder = await pipeline(
+  "feature-extraction",
+  "Xenova/all-MiniLM-L6-v2",
+  { quantized: true }
+);
+    }
+    sendResponse({ status: "ready" });
+  }
+   catch(error){
+    console.log("error while embedding ", error.message);
+  }
+  }
   
-  if (message.type === "CALL_AGENT") {
-    (async () => {
-      try {
-        const result = await axios.post("http://localhost:5000/filter-videos", message.data);
-        console.log(result.data)
-        sendResponse(result.data);  // send ONLY data, not axios object
-      } catch (err) {
-        sendResponse({ error: err.message });
-      }
-    })();
 
-    return true; 
+  if (msg.type === "EMBED") {
+    const output = await embedder(msg.text, { pooling: "mean", normalize: true });
+    sendResponse({ embedding: Array.from(output.data) });
   }
 
-})
+  return true; // keep channel open for async
+});

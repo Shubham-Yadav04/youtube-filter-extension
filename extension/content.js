@@ -1,195 +1,99 @@
 /* eslint-disable no-undef */
-console.log("content script loaded");
-let isActive = false;
+import { pipeline } from "@xenova/transformers";
+let userConstraints = null;
+const cache = new Map();
+let scanning = false;
+let userVector;
+const newConstraints= await chrome.storage.local.get(
+    "constraints",
+  );
 
-let observer;
-let storageData;
-function filterVideos(constraints) {
-    if (!isActive) {
-        console.log("Scheduler is not active, skipping filtering");
-        return;
-    }
+if(newConstraints!==userConstraints || userVector){
+  userConstraints=newConstraints;
+  userVector=  await chrome.runtime.sendMessage({
+  type: "EMBED",
+  text: userConstraints
+});
+}
+await chrome.runtime.sendMessage({ type: "INIT_EMBEDDER" });
+
+async function embedText(text) {
+  if (cache.has(text)) return cache.get(text);
+
+  const output = await embedder(text, {
+    pooling: "mean",
+    normalize: true,
+  });
+
+  const vec = Array.from(output.data);
+  cache.set(text, vec);
+  return vec;
+}
+
+chrome.runtime.onMessage.addListener((msg,sender,sendResponse)=>{
+  if(msg.action==="STATE_CHANGED" ){
+    if(msg?.started){
+      console.log(msg.started,"state changes ");
+      scanVideos();
+    } 
     
+  }
+})
+// checking up the similarity between the user prompt and the current video
+export function cosineSimilarity(vecA, vecB) {
+  let dot = 0.0;
+  let normA = 0.0;
+  let normB = 0.0;
 
-    const grid = document.querySelector("#contents");
-    if (!grid) {
-        console.log("Grid not found");
-        return;
-    }
+  for (let i = 0; i < vecA.length; i++) {
+    dot += vecA[i] * vecB[i];
+    normA += vecA[i] * vecA[i];
+    normB += vecB[i] * vecB[i];
+  }
 
-    const videoChannels = grid.querySelectorAll("ytd-rich-item-renderer");
+  normA = Math.sqrt(normA);
+  normB = Math.sqrt(normB);
 
-    let videoIdCounter = 0;
-    let videoMetadata = [];
-
-    videoChannels.forEach(video => {
-        video.dataset.aiId = (++videoIdCounter).toString();
-
-       const channelElement = video.querySelector(
-            ".yt-core-attributed-string__link, .ytd-channel-name .yt-simple-endpoint"
-        );
-
-        const titleElement = video.querySelector(".yt-core-attributed-string, ytd-video-renderer"); 
-        if (!channelElement && !titleElement) {
-            return;
-        }
-
-        const channel = channelElement?.textContent.trim().toLowerCase() || "";
-        const title = titleElement?.textContent.trim().toLowerCase() || "";
-
-        videoMetadata.push({
-            id: videoIdCounter.toString(),
-            channelName: channel,
-            title: title
-        });
-    });
-
-    console.log(videoMetadata)
-    console.log(constraints)
-    // Send request to background script
-    chrome.runtime.sendMessage(
-        { 
-            type: "CALL_AGENT", 
-            data: {
-                description: constraints, // You can replace dynamically
-                videos: videoMetadata
-            }
-        },
-        (response) => {
-            console.log("Agent response:", response);
-
-            if (!response || response.error) return;
-
-            response.forEach(({ id, block }) => {
-                if (block) {
-                    const element = document.querySelector(`[data-ai-id="${id}"]`);
-                    if (element) element.remove();
-                }
-            });
-        }
-    );
+  return dot / (normA * normB);
 }
+async function scanVideos() {
+  
+  if (scanning ) return;
+  scanning = true;
+ console.log("scanning sdsd");
+console.log(userVector);
+  if (!userVector) {
+    scanning = false;
+    return;
+  }
+ console.log("loaded sdsd");
+  const videos = document.querySelectorAll(
+    "ytd-rich-item-renderer, ytd-video-renderer"
+  );
+ 
+console.log(videos);
+  for (const video of videos) {
+    if (video.dataset.checked) continue;
+    const titleEl = video.querySelector("#video-title");
+    const channelEl = video.querySelector("ytd-channel-name");
+    if (!titleEl || !channelEl) continue;
 
-async function getStorageData() {
-    try {
-        if (!chrome.runtime?.id) {
-            console.log("Extension context invalidated, stopping script");
-            return null;
-        }
-        
-        const result = await chrome.storage.local.get(["constraints", "started"]);
-        if(result===undefined) return 
-        // Update local isActive flag
-        isActive = result.started || false;
-        
-        if (!isActive) {
-            console.log("Scheduler is inactive");
-            return null;
-        }
-        
-        console.log(result)
-        
-        return {
-            constraints: result?.constraints || ""
-        };
-    } catch (error) {
-        console.log("Storage access error:", error);
-        return null;
-    }
+    const text = `${titleEl.textContent} ${channelEl.textContent}`;
+    const videoVec = await embedText(text);
+    const sim = cosineSimilarity(videoVec, ruleVector);
+
+    if (sim < 0.6){
+        console.log("hiding ", titleEl.textContent)
+video.style.display = "none";
+    } 
+
+    video.dataset.checked = "true";
+  }
+  scanning = false;
 }
-
-// // Message listener
-// if (chrome.runtime?.id) {
-//     chrome.runtime.onMessage.addListener(async (message) => {
-//         console.log("Received message:", message);
-        
-//         if (message.type === "APPLY_FILTERS") {
-//             const data = await getStorageData();
-//             if (data) {
-//                 filterVideos(data.constraints);
-//                 // location.reload()
-//             }
-//         }
-        
-//         if (message.type === "STOP_FILTERS") {
-//             isActive = false;
-//             console.log("stop the filter call activated ")
-//            location.reload()
-//             // showAllVideos();
-//             console.log("Showing all videos");
-//         }
-//     });
-// }
-
-// MutationObserver with error handling and debouncing
-
-async function handleMutation() {
-    try {
-        // Check if extension context is still valid
-        if (!chrome.runtime?.id) {
-            console.log("Extension context invalidated, disconnecting observer");
-            if (observer) {
-                observer.disconnect();
-            }
-            return;
-        }
-        if(!storageData){
-            storageData=await getStorageData();
-        }
-        filterVideos(storageData.constraints);
-        
-    } catch (error) {
-        console.log("Filter error:", error);
-        if (observer) {
-            observer.disconnect();
-        }
-    }
-}
-if (chrome.runtime?.id)
-{
-
-    const target = document.body;
-
-    observer = new MutationObserver(handleMutation);
-
-    observer.observe(target, {
-        childList: true,
-        subtree: true
-    });
-}
-
-// Initialize - check state on load
-(async () => {
-    if (storageData && isActive) {
-        filterVideos(storageData.constraints);
-    }
-})();
-
-// Listen for storage changes
-chrome.storage.onChanged.addListener((changes, namespace) => {
-    console.log("detected storage change", changes, namespace)
-    if (namespace === 'local' && changes.started) {
-        isActive = changes.started.newValue;
-        
-        if (!isActive) {
-            return 
-        } else {
-            location.reload();
-            // // Reapply filters when scheduler is started
-            // getStorageData().then(data => {
-            //     if (data) {
-            //         storageData=data;
-            //         // location.reload()
-            //         filterVideos(data.constraints);
-            //     }
-            // });
-        }
-    }
+let timer;
+const observer = new MutationObserver(() => {
+  clearTimeout(timer);
+  timer = setTimeout(scanVideos, 800);
 });
-
-// Cleanup on unload
-window.addEventListener('beforeunload', () => {
-    if (observer) {
-        observer.disconnect();
-    }
-});
+observer.observe(document.body, { childList: true, subtree: true });

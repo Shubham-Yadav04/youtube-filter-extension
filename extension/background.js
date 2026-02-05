@@ -1,5 +1,6 @@
 /* eslint-disable no-undef */
 import { pipeline, env } from "@xenova/transformers";
+import axios from "axios";
 env.backends.onnx.wasm.wasmPaths =
   "https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/";
 
@@ -20,31 +21,17 @@ chrome.runtime.onMessage.addListener((msg,sender,sendResponse)=>{
     })
   }
 })
-
-let embedder;
-
-chrome.runtime.onMessage.addListener(async (msg, sender, sendResponse) => {
-  if (msg.type === "INIT_EMBEDDER") {
-  try{
- if (!embedder) {
- embedder = await pipeline(
-  "feature-extraction",
-  "Xenova/all-MiniLM-L6-v2",
-  { quantized: true }
-);
-    }
-    sendResponse({ status: "ready" });
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (msg.type === "EMBED-USER") {
+    axios.post(`${import.meta.env.VITE_BACKEND_URI}embed-user`, { input: msg.data })
+      .then(res => sendResponse({ embedding: res.data.embedding }))
+      .catch(err => sendResponse({ error: err.message }));
+    return true;
   }
-   catch(error){
-    console.log("error while embedding ", error.message);
-  }
-  }
-  
-
   if (msg.type === "EMBED") {
-    const output = await embedder(msg.text, { pooling: "mean", normalize: true });
-    sendResponse({ embedding: Array.from(output.data) });
+    axios.post(`${import.meta.env.VITE_BACKEND_URI}embed`, { input: msg.data })
+      .then(res => sendResponse({ embeddings: res.data.embeddings }))
+      .catch(err => sendResponse({ error: err.message }));
+    return true;
   }
-
-  return true; // keep channel open for async
 });

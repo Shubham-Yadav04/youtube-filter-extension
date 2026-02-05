@@ -1,35 +1,30 @@
 /* eslint-disable no-undef */
-import { pipeline } from "@xenova/transformers";
 let userConstraints = null;
-const cache = new Map();
-let scanning = false;
-let userVector;
-const newConstraints= await chrome.storage.local.get(
-    "constraints",
-  );
+let userVector = null;
+let scanning=false
+async function ensureUserVector() {
+  const res = await chrome.storage.local.get("constraints");
+  const latestConstraints = res.constraints;
 
-if(newConstraints!==userConstraints || userVector){
-  userConstraints=newConstraints;
-  userVector=  await chrome.runtime.sendMessage({
-  type: "EMBED",
-  text: userConstraints
-});
+  // Case 1: Nothing stored
+  if (!latestConstraints) return;
+console.log("have to embedd babby... ")
+  // Case 2: First time OR constraint changed
+  if (userConstraints !== latestConstraints || !userVector) {
+    console.log("Embedding new user constraints...");
+
+    const result = await chrome.runtime.sendMessage({
+      type: "EMBED-USER",
+      data: [latestConstraints]
+    });
+console.log(result);
+    if (result?.embedding) {
+      userVector = result.embedding;
+      userConstraints = latestConstraints; // update userConstraints after successful emmbedding
+    }
+  }
 }
-await chrome.runtime.sendMessage({ type: "INIT_EMBEDDER" });
-
-async function embedText(text) {
-  if (cache.has(text)) return cache.get(text);
-
-  const output = await embedder(text, {
-    pooling: "mean",
-    normalize: true,
-  });
-
-  const vec = Array.from(output.data);
-  cache.set(text, vec);
-  return vec;
-}
-
+ensureUserVector();
 chrome.runtime.onMessage.addListener((msg,sender,sendResponse)=>{
   if(msg.action==="STATE_CHANGED" ){
     if(msg?.started){
@@ -39,6 +34,7 @@ chrome.runtime.onMessage.addListener((msg,sender,sendResponse)=>{
     
   }
 })
+
 // checking up the similarity between the user prompt and the current video
 export function cosineSimilarity(vecA, vecB) {
   let dot = 0.0;
@@ -57,43 +53,95 @@ export function cosineSimilarity(vecA, vecB) {
   return dot / (normA * normB);
 }
 async function scanVideos() {
-  
-  if (scanning ) return;
+  console.log("Scanning videos...");
+  if (scanning) return;
   scanning = true;
- console.log("scanning sdsd");
-console.log(userVector);
+
   if (!userVector) {
     scanning = false;
     return;
   }
- console.log("loaded sdsd");
-  const videos = document.querySelectorAll(
+console.log("User vector ready, processing videos...");
+  const videos = Array.from(document.querySelectorAll(
     "ytd-rich-item-renderer, ytd-video-renderer"
-  );
- 
-console.log(videos);
-  for (const video of videos) {
-    if (video.dataset.checked) continue;
-    const titleEl = video.querySelector("#video-title");
-    const channelEl = video.querySelector("ytd-channel-name");
-    if (!titleEl || !channelEl) continue;
+  ));
 
-    const text = `${titleEl.textContent} ${channelEl.textContent}`;
-    const videoVec = await embedText(text);
-    const sim = cosineSimilarity(videoVec, ruleVector);
+  // Only process new videos
+  console.log(videos);
+  const unprocessed = videos.filter(v => !v.dataset.checked);
 
-    if (sim < 0.6){
-        console.log("hiding ", titleEl.textContent)
-video.style.display = "none";
-    } 
+  const texts = unprocessed.map(v => {
+    const title = v.querySelector(".yt-lockup-metadata-view-model__heading-reset")?.textContent ?? "";
+    const channel = v.querySelector(".yt-lockup-metadata-view-model__metadata a")?.textContent ?? "";
+    // console.log("title and channel ",title,channel);
+    return `title ${title}  channel name ${channel}`;
 
-    video.dataset.checked = "true";
+  });
+
+  if (texts.length === 0) {
+    scanning = false;
+    return;
   }
+
+  const { embeddings } = await chrome.runtime.sendMessage({
+    type: "EMBED",
+    data: texts
+  });
+
+  //  loop the embeddings and hide based on the similarty score
+  console.log("Embeddings received, evaluating similarity...",embeddings);
+  embeddings.forEach((vec, i) => {
+    const videoEl = unprocessed[i];   // ← SAME INDEX
+    const sim = cosineSimilarity(vec, userVector);
+
+    if (sim < 0.25) {
+      console.log(videoEl,"hiding with similarity ",sim);
+      videoEl.style.display = "none";  // hide only videos with low similarity 
+    }
+
+    videoEl.dataset.checked = "true";
+  });
+
   scanning = false;
 }
-let timer;
-const observer = new MutationObserver(() => {
-  clearTimeout(timer);
-  timer = setTimeout(scanVideos, 800);
-});
-observer.observe(document.body, { childList: true, subtree: true });
+
+let scanTimer;
+
+function startObserver(feed) {
+  const observer = new MutationObserver((mutations) => {
+    let shouldScan = false;
+
+    for (const mutation of mutations) {
+      if (mutation.type !== "childList") continue;
+
+      for (const node of mutation.addedNodes) {
+        if (node.nodeType !== 1) continue;
+
+        if (
+          node.matches?.("ytd-rich-item-renderer, ytd-video-renderer") ||
+          node.querySelector?.("ytd-rich-item-renderer, ytd-video-renderer")
+        ) {
+          shouldScan = true;
+          break;
+        }
+      }
+
+      if (shouldScan) break;
+    }
+
+    if (shouldScan) {
+      clearTimeout(scanTimer);
+      scanTimer = setTimeout(scanVideos, 700);
+    }
+  });
+
+  observer.observe(feed, { childList: true, subtree: true });
+}
+
+function waitForFeed() {
+  const feed = document.querySelector("ytd-rich-grid-renderer");
+  if (feed) startObserver(feed);
+  else setTimeout(waitForFeed, 500);
+}
+
+waitForFeed();

@@ -1,0 +1,57 @@
+/* YouTube Filter Extension — content styles */
+
+/* Applied immediately when card enters DOM — invisible but takes up space (no layout jank) */
+.yt-pending {
+    opacity: 0 !important;
+    pointer-events: none;
+    transition: opacity 0.25s ease;
+}
+
+/* Classification passed — fade in */
+.yt-allowed {
+    opacity: 1 !important;
+    pointer-events: auto;
+}
+
+/* Classification failed — gone */
+.yt-blocked {
+    display: none !important;
+}
+
+/* Watch-page block overlay */
+#yt-block-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 99999;
+    background: rgba(10, 10, 20, 0.96);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    color: #fff;
+    font-family: "Roboto", sans-serif;
+}
+
+#yt-block-overlay h2 {
+    font-size: 1.6rem;
+    font-weight: 700;
+    margin: 0;
+}
+
+#yt-block-overlay p {
+    font-size: 1rem;
+    opacity: 0.7;
+    margin: 0;
+}
+
+#yt-block-overlay button {
+    margin-top: 8px;
+    padding: 10px 28px;
+    border: none;
+    border-radius: 6px;
+    background: #ef4444;
+    color: #fff;
+    font-size: 0.95rem;
+    cursor: pointer;
+}

@@ -1,23 +1,42 @@
 {
   "manifest_version": 3,
-  "name": "My React Vite Extension",
-  "version": "1.0",
-  "description": "A Chrome extension built with React and Vite",
+  "name": "Focus Filter",
+  "version": "3.0",
+  "description": "AI-powered YouTube content filter — semantic classification with transcript analysis, fully in-browser.",
   "action": {
     "default_popup": "index.html"
   },
- "background": {
+  "background": {
     "service_worker": "background.js",
-    "type":"module"
+    "type": "module"
   },
-
-   "content_scripts": [
+  "content_scripts": [
     {
-      "matches": ["*://www.youtube.com/*"],
-      "js": ["content.js"],
+      "matches": [
+        "*://www.youtube.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "css": [
+        "content.css"
+      ],
       "run_at": "document_start"
     }
   ],
-  "permissions": ["storage", "tabs", "activeTab", "scripting"],
-  "host_permissions": ["*://www.youtube.com/*"]
+  "permissions": [
+    "storage",
+    "tabs",
+    "activeTab",
+    "scripting"
+  ],
+  "host_permissions": [
+    "*://www.youtube.com/*",
+    "https://www.googleapis.com/*",
+    "https://cdn.jsdelivr.net/*"
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'",
+    "sandbox": "sandbox allow-scripts; script-src 'self' https://cdn.jsdelivr.net"
+  }
 }

@@ -1,20 +1,12 @@
-import { Suspense,React,lazy} from 'react'
+import React from 'react'
 import './App.css'
-import Loading from './Loading/Loading';
-const HomePage=lazy(() =>
-  new Promise(resolve => {
-    setTimeout(() => {
-      resolve(import('./Main/HomePage.jsx')); 
-    }, 3000);
-  })) 
+import HomePage from './Main/HomePage.jsx'
+
 function App() {
-  
   return (
-  <div className='w-[300px] min-h-[400px] bg-blue-200  text-center '>
-    <Suspense fallback={<Loading/>}>
-      <HomePage/>
-    </Suspense>
-  </div>
+    <div className='w-full min-h-screen bg-gray-900 text-white'>
+      <HomePage />
+    </div>
   )
 }
 

@@ -6,7 +6,6 @@ import {
 } from "./classifier.js";
 
 import {
-    getSettings,
     getVideoDecision,
     saveVideoDecision,
     clearVideoDecisions,
@@ -14,7 +13,11 @@ import {
     resetStats,
     updateStats
 } from "./db.js";
-
+import {
+    getSettings,
+    saveSettings,
+    resetSettings
+} from "./settings.js";
 const MODEL_VERSION = "minilm-l6-v2";
 
 const MESSAGE_TYPES = {
@@ -25,7 +28,11 @@ const MESSAGE_TYPES = {
     CLEAR_DOM_CACHE: "CLEAR_DOM_CACHE",
     TAB_FOCUSED: "TAB_FOCUSED",
     GET_STATS: "GET_STATS",
-    RESET_STATS: "RESET_STATS"
+    RESET_STATS: "RESET_STATS",
+    RESET_SETTINGS: "RESET_SETTINGS",
+    TOGGLE_ENABLED: "TOGGLE_ENABLED",
+    SAVE_SETTINGS: "SAVE_SETTINGS",
+    GET_SETTINGS: "GET_SETTINGS"
 };
 
 const inFlightRequests = new Map();
@@ -437,7 +444,118 @@ chrome.runtime.onMessage.addListener(
 
             return true;
         }
+        if (
+            message?.type ===
+            MESSAGE_TYPES.RESET_SETTINGS
+        ) {
+            (async () => {
+                 const settings = await getSettings();
+
+    const locked =
+        settings.lockUntil &&
+        Date.now() < settings.lockUntil;
+
+    if (locked) {
+        sendResponse({
+            success: false,
+            error: "FILTER_LOCKED",
+            settings
+        });
+
+       return false;
+    }
+
+    const updatedSettings = await resetSettings();
+
+    await clearVideoDecisions();
+
+    await reloadActiveYouTubeTab();
+
+    sendResponse({
+        success: true,
+        settings: updatedSettings
+    });
+            return true;
+        }
+    );
+}
+ if (
+            message?.type ===
+            MESSAGE_TYPES.TOGGLE_ENABLED
+        ) {
+            (async () => {
+                const settings = await getSettings();
+
+    const locked =
+        settings.lockUntil &&
+        Date.now() < settings.lockUntil;
+
+    if (locked && settings.enabled) {
+        sendResponse({
+            success: false,
+            error: "FILTER_LOCKED",
+            settings
+        });
 
         return false;
+    }
+
+    const updatedSettings = await saveSettings({
+        ...settings,
+        enabled: Boolean(message.enabled)
+    });
+
+    await clearVideoDecisions();
+
+    await reloadActiveYouTubeTab();
+
+    sendResponse({
+        success: true,
+        settings: updatedSettings
+    });
+}
+    );
+}
+if (
+            message?.type ===
+            MESSAGE_TYPES.SAVE_SETTINGS
+        ) {
+            (async () => {
+                 const currentSettings = await getSettings();
+
+    const updatedSettings = await saveSettings({
+        ...currentSettings,
+        userRequirement: message.userRequirement,
+        relevanceThreshold: message.relevanceThreshold,
+        enabled: true
+    });
+
+    await clearVideoDecisions();
+
+    await reloadActiveYouTubeTab();
+
+    sendResponse({
+        success: true,
+        settings: updatedSettings
+    });
+
+}
+    );
+}
+if (
+            message?.type ===
+            MESSAGE_TYPES.GET_SETTINGS
+        ) {
+            (async () => {
+                 const settings = await getSettings();
+    sendResponse({
+        success: true,
+        settings
+    });
+   
+}
+    );
+}
+return true;
     }
 );

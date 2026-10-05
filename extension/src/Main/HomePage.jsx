@@ -1,64 +1,118 @@
 import { useState, useEffect } from "react";
-import {
-  validateIntent,
-  normalizeIntent,
-  parseUserTopicIntent
-} from "../../classifier.js";
-
 export default function HomePage() {
-  const [started, setStarted] = useState(true);
-  const [mode, setMode] = useState("RESTRICTED"); // RESTRICTED (BLOCK) vs FOCUS (ALLOW_ONLY)
-  const [topicsInput, setTopicsInput] = useState("");
-  const [allowThreshold, setAllowThreshold] = useState(0.35);
-  const [blockThreshold, setBlockThreshold] = useState(0.40);
-  const [semanticWeight, setSemanticWeight] = useState(0.75);
+ const [settings, setSettings] = useState({
+    enabled: true,
+    userRequirement: "",
+    relevanceThreshold: 0.70,
+    lockUntil: null
+});
+const handleResetSettings = () => {
+    if (isLocked) {
+        showToast(
+            "Focus lock is active.",
+            "warning"
+        );
+        return;
+    }
 
-  const [allowlist, setAllowlist] = useState("");
-  const [denylist, setDenylist] = useState("");
+    chrome.runtime.sendMessage(
+        { type: "RESET_SETTINGS" },
+        (response) => {
+            if (!response?.success) {
+                showToast(
+                    "Settings are currently locked.",
+                    "warning"
+                );
+                return;
+            }
 
-  const [stats, setStats] = useState({ blocked: 0, allowed: 0, uncertain: 0 });
-  const [showSettings, setShowSettings] = useState(false);
-  const [isCompiling, setIsCompiling] = useState(false);
-  const [toastMessage, setToastMessage] = useState(null);
+            setSettings(response.settings);
+            setDraftRequirement(
+                response.settings.userRequirement || ""
+            );
+            setDraftThreshold(
+                response.settings.relevanceThreshold
+            );
 
-  useEffect(() => {
-    // Load stored settings & stats
-    chrome.storage.local.get([
-      "started", "mode", "topics", "constraints",
-      "allowThreshold", "blockThreshold", "semanticWeight",
-      "allowlist", "denylist", "yt_filter_stats"
-    ], (res) => {
-      if (res.started !== undefined) setStarted(!!res.started);
-      if (res.mode) setMode(res.mode);
+            setLockDuration(null);
 
-      const rawTopics = res.topics ?? res.constraints;
-      if (rawTopics) {
-        setTopicsInput(Array.isArray(rawTopics) ? rawTopics.join("\n") : rawTopics);
-      } else {
-        setTopicsInput("want only coding related videos either DSA , system design or other coding related videos");
-        setMode("FOCUS");
-      }
+            showToast("Settings reset.");
+        }
+    );
+};
+const [draftRequirement, setDraftRequirement] = useState("");
+const [draftThreshold, setDraftThreshold] = useState(0.70);
 
-      if (res.allowThreshold !== undefined) setAllowThreshold(res.allowThreshold);
-      if (res.blockThreshold !== undefined) setBlockThreshold(res.blockThreshold);
-      if (res.semanticWeight !== undefined) setSemanticWeight(res.semanticWeight);
+const [lockDuration, setLockDuration] = useState(null);
+const isLocked = remainingMs > 0;
+const [stats, setStats] = useState({
+    allowed: 0,
+    blocked: 0
+});
+const [remainingMs, setRemainingMs] = useState(0);
+const [saving, setSaving] = useState(false);
+const [toast, setToast] = useState(null);
+useEffect(() => {
+    const update = () => {
+        if (!settings.lockUntil) {
+            setRemainingMs(0);
+            return;
+        }
 
-      if (res.allowlist) setAllowlist(Array.isArray(res.allowlist) ? res.allowlist.join("\n") : res.allowlist);
-      if (res.denylist) setDenylist(Array.isArray(res.denylist) ? res.denylist.join("\n") : res.denylist);
+        setRemainingMs(
+            Math.max(0, settings.lockUntil - Date.now())
+        );
+    };
 
-      if (res.yt_filter_stats) setStats(res.yt_filter_stats);
-    });
+    update();
 
-    // Fetch stats periodically
-    const interval = setInterval(() => {
-      chrome.runtime.sendMessage({ type: "GET_STATS" }, (res) => {
-        if (res?.stats) setStats(res.stats);
-      });
-    }, 2000);
+    const interval = setInterval(update, 1000);
 
     return () => clearInterval(interval);
-  }, []);
+}, [settings.lockUntil]);
+ useEffect(() => {
+    chrome.runtime.sendMessage(
+        { type: "GET_SETTINGS" },
+        (response) => {
+            if (!response?.success) return;
 
+            const s = response.settings;
+
+            setSettings(s);
+            setDraftRequirement(s.userRequirement || "");
+            setDraftThreshold(s.relevanceThreshold ?? 0.70);
+        }
+    );
+
+    loadStats();
+}, []);
+const loadStats = () => {
+    chrome.runtime.sendMessage(
+        { type: "GET_STATS" },
+        (response) => {
+            if (response?.stats) {
+                setStats(response.stats);
+            }
+        }
+    );
+};
+function formatRemaining(ms) {
+    const totalSeconds = Math.ceil(ms / 1000);
+
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+
+    if (hours > 0) {
+        return `${hours}h ${minutes}m`;
+    }
+
+    if (minutes > 0) {
+        return `${minutes}m ${seconds}s`;
+    }
+
+    return `${seconds}s`;
+}
   const showToast = (msg, type = "success") => {
     setToastMessage({ text: msg, type });
     setTimeout(() => setToastMessage(null), 4000);
@@ -79,77 +133,62 @@ export default function HomePage() {
     }
   };
 
-  // Master switch toggle: NO INTENT COMPILATION ON TOGGLE!
-  const handleToggle = () => {
-    const nextStarted = !started;
-    setStarted(nextStarted);
-    chrome.storage.local.set({ started: nextStarted });
-    chrome.runtime.sendMessage({ action: "STATE_CHANGED", started: nextStarted });
-  };
+ const handleToggle = () => {
+    if (isLocked) return;
 
-  // Owns Intent Compilation on Save
-  const handleSave = async () => {
-    setIsCompiling(true);
+    chrome.runtime.sendMessage(
+        {
+            type: "TOGGLE_ENABLED",
+            enabled: !settings.enabled
+        },
+        (response) => {
+            if (!response?.success) {
+                showToast("Filter is currently locked.", "warning");
+                return;
+            }
 
-    const topicsArr = topicsInput.split("\n").map(s => s.trim()).filter(Boolean);
-    const allowArr = allowlist.split("\n").map(s => s.trim().toLowerCase()).filter(Boolean);
-    const denyArr = denylist.split("\n").map(s => s.trim().toLowerCase()).filter(Boolean);
-    const effectiveMode = mode === "FOCUS" ? "ALLOW_ONLY" : "BLOCK";
-
-    let finalCompiledIntent = null;
-    let compilationSuccess = false;
-
-    try {
-      const response = await fetch("http://localhost:8000/compile-intent", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: topicsInput, mode: effectiveMode }),
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        if (data.ok && validateIntent(data.compiledIntent)) {
-          finalCompiledIntent = normalizeIntent(data.compiledIntent);
-          compilationSuccess = true;
+            setSettings(response.settings);
         }
-      }
-    } catch (err) {
-      console.warn("[HomePage ⚠️] LLM intent compiler backend unreachable:", err);
+    );
+};
+
+const handleSave = () => {
+    if (!draftRequirement.trim()) {
+        showToast("Tell Focus Filter what you want to watch.", "warning");
+        return;
     }
 
-    // Atomic Intent Preservation: Read existing storage if backend compilation failed
-    const existing = await chrome.storage.local.get(["compiledIntent"]);
+    setSaving(true);
 
-    if (!compilationSuccess) {
-      if (existing.compiledIntent && validateIntent(existing.compiledIntent)) {
-        finalCompiledIntent = existing.compiledIntent;
-        showToast("⚠️ LLM compiler offline. Retained previous active rules.", "warning");
-      } else {
-        // Fallback to deterministic parser if no previous valid intent exists
-        finalCompiledIntent = parseUserTopicIntent(topicsInput, mode);
-        showToast("⚠️ LLM compiler offline. Applied deterministic fallback intent.", "warning");
-      }
-    } else {
-      showToast("✓ Intent Compiled & Rules Saved!", "success");
-    }
+    const lockDurationMs = lockDuration
+        ? lockDuration * 60 * 1000
+        : null;
 
-    await chrome.storage.local.set({
-      started,
-      mode,
-      topics: topicsArr,
-      compiledIntent: finalCompiledIntent,
-      allowThreshold: parseFloat(allowThreshold),
-      blockThreshold: parseFloat(blockThreshold),
-      semanticWeight: parseFloat(semanticWeight),
-      keywordWeight: parseFloat((1 - semanticWeight).toFixed(2)),
-      allowlist: allowArr,
-      denylist: denyArr,
-    });
+    chrome.runtime.sendMessage(
+        {
+            type: "SAVE_SETTINGS",
+            userRequirement: draftRequirement.trim(),
+            relevanceThreshold: Number(draftThreshold),
+            lockDurationMs
+        },
+        (response) => {
+            setSaving(false);
 
-    // Notify background worker to wipe decision cache and reload tab
-    chrome.runtime.sendMessage({ type: "RULE_UPDATED" });
-    setIsCompiling(false);
-  };
+            if (!response?.success) {
+                showToast("Could not save settings.", "error");
+                return;
+            }
+
+            setSettings(response.settings);
+
+            showToast(
+                lockDuration
+                    ? "Filter applied & locked."
+                    : "Filter applied successfully."
+            );
+        }
+    );
+};
 
   const handleResetStats = () => {
     chrome.runtime.sendMessage({ type: "RESET_STATS" }, () => {
@@ -158,31 +197,79 @@ export default function HomePage() {
   };
 
   return (
-    <div className="w-[380px] p-5 bg-gradient-to-b from-gray-900 to-gray-950 text-white font-sans rounded-xl border border-gray-800 shadow-2xl">
+    <div className="w-[380px] min-h-[500px]  bg-[#09090b] text-white p-4 font-sans">
       {/* Header */}
-      <div className="flex items-center justify-between pb-4 border-b border-gray-800">
+      <div className="flex items-center justify-between mb-6">
+    <div>
         <div className="flex items-center gap-2">
-          <div>
-            <h1 className="font-bold text-base bg-gradient-to-r from-purple-400 to-blue-400 bg-clip-text text-transparent">
-              YouTube Focus Filter
+            <div className="w-2 h-2 rounded-full bg-violet-400 shadow-[0_0_10px_rgba(167,139,250,0.8)]" />
+
+            <h1 className="text-[15px] font-semibold tracking-tight">
+                Focus Filter
             </h1>
-            <p className="text-[10px] text-gray-400">Semantic AI • Intent Compiler v4.0</p>
-          </div>
         </div>
 
-        {/* Master Switch */}
-        <button
-          onClick={handleToggle}
-          className={`px-3 py-1.5 rounded-full font-semibold text-xs transition-all shadow-md ${
-            started
-              ? "bg-emerald-500 text-white shadow-emerald-900/40 hover:bg-emerald-600"
-              : "bg-gray-700 text-gray-300 hover:bg-gray-600"
-          }`}
-        >
-          {started ? "● Active" : "○ Disabled"}
-        </button>
-      </div>
+        <p className="text-[10px] text-zinc-500 mt-1">
+            Local semantic filtering for YouTube
+        </p>
+    </div>
 
+    <button
+        onClick={handleToggle}
+        disabled={isLocked}
+        className={`
+            relative px-3 py-1.5 rounded-full text-[11px]
+            font-medium transition-all
+            ${settings.enabled
+                ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
+                : "bg-zinc-800 text-zinc-400 border border-zinc-700"
+            }
+            ${isLocked ? "opacity-50 cursor-not-allowed" : ""}
+        `}
+    >
+        {settings.enabled ? "● Active" : "○ Paused"}
+    </button>
+</div>
+{/* --- TEXT INPUT BLOCK --- */}
+<div className="mb-5">
+    <label className="block text-[11px] font-medium text-zinc-400 uppercase tracking-wider mb-2">
+        Your focus
+    </label>
+
+    <div className="relative">
+        <textarea
+            value={draftRequirement}
+            onChange={(e) => setDraftRequirement(e.target.value)}
+            rows={4}
+            placeholder="e.g. I want videos about Java, Spring Boot, system design and backend engineering."
+            className="
+                w-full
+                bg-zinc-900
+                border border-zinc-800
+                focus:border-violet-500/60
+                focus:ring-1 focus:ring-violet-500/20
+                rounded-xl
+                p-3
+                text-[12px]
+                leading-relaxed
+                text-zinc-200
+                placeholder:text-zinc-600
+                outline-none
+                resize-none
+                transition
+            "
+        />
+
+        <div className="absolute bottom-2 right-2 text-[9px] text-zinc-600">
+            Semantic
+        </div>
+    </div>
+
+    <p className="mt-2 text-[10px] text-zinc-600">
+        Describe what you want naturally. Focus Filter understands the meaning,
+        not just keywords.
+    </p>
+</div>
       {/* Save Toast Notification */}
       {toastMessage && (
         <div
@@ -195,173 +282,159 @@ export default function HomePage() {
           {toastMessage.text}
         </div>
       )}
+      {/* --- SLIDER BLOCK --- */}
+<div className="bg-zinc-900/60 border border-zinc-800 rounded-xl p-3 mb-4">
+    <div className="flex items-center justify-between mb-2">
+        <div>
+            <p className="text-[11px] font-medium text-zinc-300">
+                Relevance
+            </p>
 
+            <p className="text-[9px] text-zinc-600">
+                How closely a video should match your focus
+            </p>
+        </div>
+
+        <span className="text-[11px] font-mono text-violet-400">
+            {Math.round(draftThreshold * 100)}%
+        </span>
+    </div>
+
+    <input
+        type="range"
+        min="0.50"
+        max="0.90"
+        step="0.01"
+        value={draftThreshold}
+        onChange={(e) => setDraftThreshold(e.target.value)}
+        className="w-full accent-violet-500"
+    />
+
+    <div className="flex justify-between mt-1 text-[8px] text-zinc-600">
+        <span>Broader</span>
+        <span>Stricter</span>
+    </div>
+</div>
       {/* Stats Display */}
-      <div className="my-4 grid grid-cols-3 gap-2 bg-gray-800/50 p-2.5 rounded-lg border border-gray-800/80 text-center">
-        <div>
-          <div className="text-xs font-semibold text-emerald-400">{stats.allowed || 0}</div>
-          <div className="text-[9px] text-gray-400 uppercase tracking-wider">Allowed</div>
-        </div>
-        <div>
-          <div className="text-xs font-semibold text-rose-400">{stats.blocked || 0}</div>
-          <div className="text-[9px] text-gray-400 uppercase tracking-wider">Blocked</div>
-        </div>
-        <div>
-          <div className="text-xs font-semibold text-amber-400">{stats.uncertain || 0}</div>
-          <div className="text-[9px] text-gray-400 uppercase tracking-wider">Uncertain</div>
-        </div>
-      </div>
-
-      {/* Mode Selection */}
-      <div className="mb-4">
-        <label className="block text-xs font-medium text-gray-300 mb-1.5">Filtering Strategy Mode</label>
-        <div className="grid grid-cols-2 gap-2 p-1 bg-gray-800/70 rounded-lg border border-gray-700/50">
-          <button
-            onClick={() => setMode("RESTRICTED")}
-            className={`py-1.5 px-2 rounded-md text-xs font-medium transition-all ${
-              mode === "RESTRICTED"
-                ? "bg-purple-600 text-white shadow-sm"
-                : "text-gray-400 hover:text-white"
-            }`}
-          >
-            🚫 Block Topics
-          </button>
-          <button
-            onClick={() => setMode("FOCUS")}
-            className={`py-1.5 px-2 rounded-md text-xs font-medium transition-all ${
-              mode === "FOCUS"
-                ? "bg-purple-600 text-white shadow-sm"
-                : "text-gray-400 hover:text-white"
-            }`}
-          >
-            🎯 Allow Only Topics
-          </button>
-        </div>
-      </div>
-
-      {/* Natural Language Topics Input */}
-      <div className="mb-4">
-        <label className="block text-xs font-medium text-gray-300 mb-1">
-          {mode === "RESTRICTED" ? "Restricted Topics / Intent Sentence:" : "Allowed Focus Topics / Intent Sentence:"}
-        </label>
-        <textarea
-          rows={3}
-          value={topicsInput}
-          onChange={(e) => handleTopicsTextChange(e.target.value)}
-          placeholder={
-            mode === "RESTRICTED"
-              ? "e.g. I don't want gaming, vlog or lifestyle content"
-              : "e.g. want only coding related videos either DSA , system design or other coding related videos"
-          }
-          className="w-full p-2.5 bg-gray-800/90 border border-gray-700/70 rounded-lg text-xs text-gray-200 placeholder-gray-500 focus:outline-none focus:border-purple-500 transition-colors resize-none"
-        />
-        <p className="text-[10px] text-gray-400 mt-1">
-          Compiled by LLM intent compiler on Save. Zero latency during video classification.
+     <div className="grid grid-cols-2 gap-2 mb-4">
+    <div className="bg-zinc-900/60 border border-zinc-800 rounded-xl p-3">
+        <p className="text-[9px] text-zinc-600 uppercase tracking-wider">
+            Allowed
         </p>
-      </div>
+        <p className="text-xl font-semibold text-zinc-200 mt-1">
+            {stats.allowed || 0}
+        </p>
+    </div>
 
-      {/* Settings Toggle */}
-      <div className="mb-4">
-        <button
-          onClick={() => setShowSettings(!showSettings)}
-          className="text-xs text-purple-400 hover:text-purple-300 flex items-center gap-1 font-medium"
-        >
-          ⚙️ {showSettings ? "Hide Advanced Settings" : "Configure Thresholds & Weights"}
-        </button>
+    <div className="bg-zinc-900/60 border border-zinc-800 rounded-xl p-3">
+        <p className="text-[9px] text-zinc-600 uppercase tracking-wider">
+            Blocked
+        </p>
 
-        {showSettings && (
-          <div className="mt-3 p-3 bg-gray-800/60 rounded-lg border border-gray-700/60 space-y-3 text-xs">
-            <div>
-              <div className="flex justify-between mb-1 text-gray-300">
-                <span>Allow Threshold (Focus):</span>
-                <span className="font-mono text-purple-400">{allowThreshold}</span>
-              </div>
-              <input
-                type="range"
-                min="0.20"
-                max="0.60"
-                step="0.01"
-                value={allowThreshold}
-                onChange={(e) => setAllowThreshold(e.target.value)}
-                className="w-full accent-purple-500 h-1 bg-gray-700 rounded-lg"
-              />
-            </div>
+        <p className="text-xl font-semibold text-zinc-200 mt-1">
+            {stats.blocked || 0}
+        </p>
+    </div>
+</div>
+{/* --- LOCK BLOCK --- */}
+ <div className="bg-zinc-900/60 border border-zinc-800 rounded-xl p-3 mb-4">
+    <div className="flex items-center justify-between mb-3">
+        <div>
+            <p className="text-[11px] font-medium text-zinc-300">
+                Focus lock
+            </p>
 
-            <div>
-              <div className="flex justify-between mb-1 text-gray-300">
-                <span>Block Threshold (Restriction):</span>
-                <span className="font-mono text-purple-400">{blockThreshold}</span>
-              </div>
-              <input
-                type="range"
-                min="0.25"
-                max="0.65"
-                step="0.01"
-                value={blockThreshold}
-                onChange={(e) => setBlockThreshold(e.target.value)}
-                className="w-full accent-purple-500 h-1 bg-gray-700 rounded-lg"
-              />
-            </div>
+            <p className="text-[9px] text-zinc-600">
+                Prevent yourself from turning the filter off
+            </p>
+        </div>
 
-            <div>
-              <div className="flex justify-between mb-1 text-gray-300">
-                <span>Semantic Weight (vs Keyword):</span>
-                <span className="font-mono text-purple-400">{semanticWeight}</span>
-              </div>
-              <input
-                type="range"
-                min="0.50"
-                max="0.95"
-                step="0.05"
-                value={semanticWeight}
-                onChange={(e) => setSemanticWeight(e.target.value)}
-                className="w-full accent-purple-500 h-1 bg-gray-700 rounded-lg"
-              />
-            </div>
-
-            {/* Allowlist & Denylist */}
-            <div className="grid grid-cols-2 gap-2 pt-1 border-t border-gray-700">
-              <div>
-                <label className="block text-[10px] text-gray-400 mb-1">Channel Allowlist</label>
-                <textarea
-                  rows={2}
-                  value={allowlist}
-                  onChange={(e) => setAllowlist(e.target.value)}
-                  placeholder="Channel names..."
-                  className="w-full p-1.5 bg-gray-900 border border-gray-700 rounded text-[11px] text-gray-200 resize-none"
-                />
-              </div>
-              <div>
-                <label className="block text-[10px] text-gray-400 mb-1">Channel Denylist</label>
-                <textarea
-                  rows={2}
-                  value={denylist}
-                  onChange={(e) => setDenylist(e.target.value)}
-                  placeholder="Channel names..."
-                  className="w-full p-1.5 bg-gray-900 border border-gray-700 rounded text-[11px] text-gray-200 resize-none"
-                />
-              </div>
-            </div>
-          </div>
+        {isLocked && (
+            <span className="text-[10px] text-amber-400 font-mono">
+                🔒 {formatRemaining(remainingMs)}
+            </span>
         )}
-      </div>
+    </div>
 
+    {!isLocked && (
+        <div className="grid grid-cols-4 gap-1.5">
+            {[30, 60, 120, 240].map((minutes) => (
+                <button
+                    key={minutes}
+                    onClick={() =>
+                        setLockDuration(
+                            lockDuration === minutes ? null : minutes
+                        )
+                    }
+                    className={`
+                        py-1.5 rounded-lg text-[10px]
+                        border transition
+                        ${
+                            lockDuration === minutes
+                                ? "bg-violet-500/15 border-violet-500/40 text-violet-300"
+                                : "bg-zinc-950 border-zinc-800 text-zinc-500 hover:text-zinc-300"
+                        }
+                    `}
+                >
+                    {minutes < 60
+                        ? `${minutes}m`
+                        : `${minutes / 60}h`}
+                </button>
+            ))}
+        </div>
+    )}
+
+    {isLocked && (
+        <div className="text-[10px] text-zinc-500">
+            Focus Filter cannot be disabled until the lock expires.
+        </div>
+    )}
+</div>
       {/* Action Buttons */}
       <div className="flex gap-2">
-        <button
-          onClick={handleSave}
-          disabled={isCompiling}
-          className="flex-1 py-2 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-500 hover:to-blue-500 text-white font-semibold text-xs rounded-lg shadow-lg shadow-purple-900/30 transition-all active:scale-[0.98] disabled:opacity-50"
-        >
-          {isCompiling ? "Compiling Intent..." : "Save & Apply Rules"}
-        </button>
-        <button
-          onClick={handleResetStats}
-          className="px-3 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 font-medium text-xs rounded-lg transition-colors"
-          title="Reset filter counters"
-        >
-          Reset Stats
-        </button>
+       <button
+    onClick={handleSave}
+    disabled={saving || !draftRequirement.trim()}
+    className="
+        w-full
+        py-2.5
+        rounded-xl
+        bg-violet-600
+        hover:bg-violet-500
+        disabled:bg-zinc-800
+        disabled:text-zinc-600
+        text-white
+        text-[11px]
+        font-semibold
+        transition
+        shadow-lg
+        shadow-violet-950/30
+    "
+>
+    {saving
+        ? "Applying..."
+        : lockDuration
+            ? "Apply & Start Focus Lock"
+            : "Save & Apply"}
+</button>
+        <div className="flex items-center justify-center gap-3 mt-3">
+    <button
+        onClick={handleResetStats}
+        className="text-[9px] text-zinc-600 hover:text-zinc-400 transition"
+    >
+        Reset statistics
+    </button>
+
+    <span className="text-zinc-800">•</span>
+
+    <button
+        onClick={handleResetSettings}
+        disabled={isLocked}
+        className="text-[9px] text-zinc-600 hover:text-zinc-400 transition disabled:opacity-30"
+    >
+        Reset settings
+    </button>
+</div>
       </div>
     </div>
   );

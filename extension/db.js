@@ -33,25 +33,13 @@ const DB_NAME = "YTFilterDB";
 const DB_VERSION = 1;
 
 const STORES = {
-    SETTINGS: "settings",
     VIDEO_DECISIONS: "videoDecisions",
     VIDEO_EMBEDDINGS: "videoEmbeddings",
     POLICY_EMBEDDINGS: "policyEmbeddings",
     STATS: "stats"
 };
 
-const SETTINGS_KEY = "current";
 const STATS_KEY = "current";
-
-const DEFAULT_SETTINGS = {
-    enabled: true,
-    userRequirement:
-        "I want videos related to software engineering and programming.",
-    relevanceThreshold: 0.70,
-    policyHash: "",
-    updatedAt: Date.now()
-};
-
 const DEFAULT_STATS = {
     blocked: 0,
     allowed: 0,
@@ -70,7 +58,6 @@ function canonicalizePolicy(userRequirement = "") {
         .trim()
         .toLowerCase();
 }
-
 /**
  * Generate a deterministic hash for the current policy.
  */
@@ -107,14 +94,6 @@ function openDatabase() {
 
         request.onupgradeneeded = event => {
             const db = event.target.result;
-
-            if (!db.objectStoreNames.contains(
-                STORES.SETTINGS
-            )) {
-                db.createObjectStore(
-                    STORES.SETTINGS
-                );
-            }
 
             if (!db.objectStoreNames.contains(
                 STORES.VIDEO_DECISIONS
@@ -324,148 +303,6 @@ async function executeTransaction(
         };
     });
 }
-
-/* -------------------------------------------------------------------------- */
-/* Settings                                                                   */
-/* -------------------------------------------------------------------------- */
-
-/**
- * Create default settings with a valid policy hash.
- */
-async function createDefaultSettings() {
-    const policyHash =
-        await generatePolicyHash(
-            DEFAULT_SETTINGS.userRequirement
-        );
-
-    return {
-        ...DEFAULT_SETTINGS,
-        policyHash,
-        updatedAt: Date.now()
-    };
-}
-
-/**
- * Read current user settings.
- */
-export async function getSettings() {
-    try {
-        const db = await openDatabase();
-
-        return await new Promise(
-            (resolve, reject) => {
-                const transaction =
-                    db.transaction(
-                        STORES.SETTINGS,
-                        "readonly"
-                    );
-
-                const store =
-                    transaction.objectStore(
-                        STORES.SETTINGS
-                    );
-
-                const request =
-                    store.get(SETTINGS_KEY);
-
-                request.onsuccess = async () => {
-                    try {
-                        if (!request.result) {
-                            const defaults =
-                                await createDefaultSettings();
-
-                            await saveSettingsInternal(
-                                defaults
-                            );
-
-                            resolve(defaults);
-                            return;
-                        }
-
-                        resolve({
-                            ...DEFAULT_SETTINGS,
-                            ...request.result
-                        });
-                    } catch (error) {
-                        reject(error);
-                    }
-                };
-
-                request.onerror = () => {
-                    reject(request.error);
-                };
-            }
-        );
-    } catch (error) {
-        console.error(
-            "[DB ❌] getSettings failed:",
-            error
-        );
-
-        return createDefaultSettings();
-    }
-}
-
-/**
- * Persist settings without recalculating the policy.
- */
-async function saveSettingsInternal(settings) {
-    await executeTransaction(
-        STORES.SETTINGS,
-        "readwrite",
-        store => {
-            store.put(
-                settings,
-                SETTINGS_KEY
-            );
-        }
-    );
-}
-
-/**
- * Save settings and regenerate the policy hash.
- */
-export async function saveSettings(
-    settings = {}
-) {
-    try {
-        const current =
-            await getSettings();
-
-        const merged = {
-            ...DEFAULT_SETTINGS,
-            ...current,
-            ...settings
-        };
-
-        merged.userRequirement =
-            String(
-                merged.userRequirement || ""
-            ).trim();
-
-        merged.policyHash =
-            await generatePolicyHash(
-                merged.userRequirement
-            );
-
-        merged.updatedAt =
-            Date.now();
-
-        await saveSettingsInternal(
-            merged
-        );
-
-        return merged;
-    } catch (error) {
-        console.error(
-            "[DB ❌] saveSettings failed:",
-            error
-        );
-
-        throw error;
-    }
-}
-
 /* -------------------------------------------------------------------------- */
 /* Video Decisions                                                            */
 /* -------------------------------------------------------------------------- */
@@ -938,36 +775,3 @@ export async function resetStats() {
         throw error;
     }
 }
-function canonicalizePolicy({ userRequirement = ""}) {
-    return String(userRequirement).trim().toLowerCase(); 
-}
-
-export async function generatePolicyHash({ userRequirement = ""}) {
-    const canonicalPolicy = canonicalizePolicy({ userRequirement });
-    
-    const encoder = new TextEncoder(); 
-    const data = encoder.encode(canonicalPolicy); 
-    const hashBuffer = await crypto.subtle.digest("SHA-256", data); 
-    const hashArray = Array.from(new Uint8Array(hashBuffer)); 
-    return hashArray.map(byte => byte.toString(16).padStart(2, "0")).join("");
-}
-export async function saveSettings(settings = {}) {
-    try {
-        const current = await getSettings();
-        const merged = { ...DEFAULT_SETTINGS, ...current, ...settings };
-      
-        merged.userRequirement = String(merged.userRequirement || "").trim();
-        /* * Normalize domains. * * This prevents duplicate domains and makes * policy hashing deterministic. */
-
-        merged.policyHash = await generatePolicyHash({ userRequirement: merged.userRequirement });
-        merged.updatedAt = Date.now();
-        /* * Persist settings. */
-        await saveSettingsInternal(merged);
-        console.log("[DB 💾] Settings saved:", { enabled: merged.enabled, policyHash: merged.policyHash, updatedAt: merged.updatedAt });
-        return merged;
-    }
-    catch (error) { 
-        console.error("[DB ❌] saveSettings failed:", error);
-         throw error; 
-        }
-     }

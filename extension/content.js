@@ -25,6 +25,8 @@ const CLASS_NAMES = {
 let scanScheduled = false;
 let scanDebounceTimer = null;
 let scrollTimer = null;
+let extensionEnabled = false;
+let scanGeneration = 0;
 
 function extractVideoId(href) {
     if (!href) return null;
@@ -52,7 +54,7 @@ function extractVideoId(href) {
             return parts[shortsIndex + 1];
         }
 
-    } catch (_) {
+    } catch {
         // Ignore invalid URLs.
     }
 
@@ -215,11 +217,14 @@ function getVideoData(card) {
 
 async function scanVisibleCards() {
     scanScheduled = false;
+    if (!extensionEnabled) {
+        return;
+    }
 
+    const generation = scanGeneration;
     const cards = Array.from(
         document.querySelectorAll(CARD_SELECTOR)
     );
-
     if (!cards.length) {
         return;
     }
@@ -258,6 +263,10 @@ async function scanVisibleCards() {
                 videos: items.map(item => item.video)
             });
 
+        if (!extensionEnabled || generation !== scanGeneration) {
+            return;
+        }
+
         const results =
             response?.results || {};
 
@@ -278,6 +287,10 @@ async function scanVisibleCards() {
         }
 
     } catch (error) {
+        if (!extensionEnabled || generation !== scanGeneration) {
+            return;
+        }
+
         console.error(
             "[YTFilter] Batch classification failed:",
             error
@@ -295,7 +308,7 @@ async function scanVisibleCards() {
 }
 
 function scheduleScan() {
-    if (scanScheduled) {
+    if (!extensionEnabled || scanScheduled) {
         return;
     }
 
@@ -369,6 +382,11 @@ function getWatchPageChannel() {
 }
 
 async function checkWatchPage() {
+    if (!extensionEnabled) {
+        return;
+    }
+
+    const generation = scanGeneration;
     const url = new URL(
         location.href
     );
@@ -397,6 +415,10 @@ async function checkWatchPage() {
         const result =
             response?.result;
 
+        if (!extensionEnabled || generation !== scanGeneration) {
+            return;
+        }
+
         if (
             result?.decision === "BLOCKED"
         ) {
@@ -409,6 +431,10 @@ async function checkWatchPage() {
         }
 
     } catch (error) {
+        if (!extensionEnabled || generation !== scanGeneration) {
+            return;
+        }
+
         console.error(
             "[YTFilter] Watch page classification failed:",
             error
@@ -558,6 +584,10 @@ function removeBlockOverlay() {
 }
 
 async function handleNavigation() {
+    if (!extensionEnabled) {
+        return;
+    }
+
     removeBlockOverlay();
 
     if (isWatchPage()) {
@@ -568,6 +598,10 @@ async function handleNavigation() {
 }
 
 function onScroll() {
+    if (!extensionEnabled) {
+        return;
+    }
+
     clearTimeout(scrollTimer);
 
     scrollTimer = setTimeout(() => {
@@ -610,18 +644,55 @@ const observer =
         }
     });
 
-function init() {
-    const target =
-        document.documentElement ||
-        document.body;
+function setExtensionEnabled(enabled) {
+    const wasEnabled = extensionEnabled;
+    extensionEnabled = enabled;
+    scanGeneration++;
 
-    if (target) {
-        observer.observe(target, {
-            childList: true,
-            subtree: true
-        });
+    if (!enabled) {
+        observer.disconnect();
+        clearTimeout(scanDebounceTimer);
+        clearTimeout(scrollTimer);
+        scanScheduled = false;
+
+        if (!wasEnabled) {
+            return;
+        }
+
+        document
+            .querySelectorAll(CARD_SELECTOR)
+            .forEach(card => {
+                delete card.dataset.ytfChecked;
+                card.classList.remove(
+                    CLASS_NAMES.PENDING,
+                    CLASS_NAMES.BLOCKED
+                );
+                card.classList.add(CLASS_NAMES.ALLOWED);
+                card.removeAttribute("title");
+            });
+
+        removeBlockOverlay();
+        return;
     }
 
+    if (!wasEnabled) {
+        const target =
+            document.documentElement ||
+            document.body;
+
+        if (target) {
+            observer.observe(target, {
+                childList: true,
+                subtree: true
+            });
+        }
+
+        clearDOMCache();
+        handleNavigation();
+    }
+}
+
+function init() {
     window.addEventListener(
         "scroll",
         onScroll,
@@ -647,42 +718,36 @@ function init() {
 
     chrome.runtime.onMessage.addListener(
         message => {
-            if (
-                message?.type ===
-                    MESSAGE_TYPES.CLEAR_DOM_CACHE ||
-                message?.type ===
-                    MESSAGE_TYPES.TAB_FOCUSED
-            ) {
-                clearDOMCache();
-                scheduleScan();
+            if (message?.type === MESSAGE_TYPES.STATE_CHANGED) {
+                setExtensionEnabled(message.enabled === true);
+                return;
             }
 
             if (
-                (
-                    message?.type ===
-                    MESSAGE_TYPES.STATE_CHANGED ||
-                    message?.action ===
-                    MESSAGE_TYPES.STATE_CHANGED
-                ) &&
-                message.started === false
+                message?.type === MESSAGE_TYPES.CLEAR_DOM_CACHE ||
+                message?.type === MESSAGE_TYPES.TAB_FOCUSED
             ) {
+                if (!extensionEnabled) {
+                    return;
+                }
+
                 clearDOMCache();
-
-                document
-                    .querySelectorAll(CARD_SELECTOR)
-                    .forEach(card => {
-                        setCardState(
-                            card,
-                            "ALLOWED"
-                        );
-                    });
-
-                removeBlockOverlay();
+                scheduleScan();
             }
         }
     );
 
-    handleNavigation();
+    chrome.runtime.sendMessage({
+        type: "GET_SETTINGS"
+    }).then(response => {
+        if (!response?.success) {
+            throw new Error(response?.error || "Unable to read extension settings");
+        }
+
+        setExtensionEnabled(response.settings?.enabled === true);
+    }).catch(error => {
+        console.error("[YTFilter] Could not load extension state:", error);
+    });
 }
 
 if (

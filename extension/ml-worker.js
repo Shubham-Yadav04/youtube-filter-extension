@@ -1,5 +1,7 @@
+console.log("[ML Worker] Started");
 import { pipeline, env } from "@xenova/transformers";
 
+console.log("[ML Worker] Transformers imported");
 const MODEL_ID = "Xenova/all-MiniLM-L6-v2";
 const MODEL_VERSION = "minilm-l6-v2";
 
@@ -14,12 +16,22 @@ let extractorPromise = null;
 /**
  * Load and cache the embedding model.
  */
-function getExtractor() {
+
+async function getExtractor() {
     if (!extractorPromise) {
+        console.log("[ML Worker] loading model", MODEL_ID);
+
         extractorPromise = pipeline(
             "feature-extraction",
             MODEL_ID
-        );
+        ).then(extractor => {
+            console.log("[ML Worker] model loaded");
+            return extractor;
+        }).catch(error => {
+            console.error("[ML Worker] Model loading failed:", error);
+            extractorPromise = null;
+            throw error;
+        });
     }
 
     return extractorPromise;
@@ -60,10 +72,16 @@ self.onmessage = async event => {
         return;
     }
 
+    console.log("[ML Worker] received EMBED", { requestId });
+
     try {
         const embedding =
             await generateEmbedding(text);
 
+        console.log("[ML Worker] embedding generated", {
+            requestId,
+            dimensions: embedding.length
+        });
         self.postMessage({
             requestId,
             embedding,
@@ -79,4 +97,3 @@ self.onmessage = async event => {
         });
     }
 };
-

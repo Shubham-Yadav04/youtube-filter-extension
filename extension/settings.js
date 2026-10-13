@@ -1,7 +1,7 @@
 const DEFAULT_SETTINGS = {
     enabled: true,
     userRequirement: "",
-    relevanceThreshold: 0.70,
+    relevanceThreshold: 0.20,
     policyHash: "",
      lockUntil: null,
     updatedAt: 0
@@ -81,3 +81,4 @@ export function getLockRemainingMs(settings) {
         settings.lockUntil - Date.now()
     );
 }
+

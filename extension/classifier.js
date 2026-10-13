@@ -1,3 +1,5 @@
+/* eslint-disable no-undef */
+
 import {
     getPolicyEmbedding,
     savePolicyEmbedding,
@@ -5,8 +7,7 @@ import {
     saveVideoEmbedding
 } from "./db.js";
 
-const CLASSIFICATION_TIMEOUT = 15_000;
-
+const EMBEDDING_TIMEOUT = 120_000;
 const MODEL_VERSION = "minilm-l6-v2";
 
 const DECISIONS = {
@@ -14,115 +15,102 @@ const DECISIONS = {
     BLOCKED: "BLOCKED"
 };
 
-const DEFAULT_THRESHOLD = 0.70;
+const DEFAULT_THRESHOLD = 0.20;
 
-let worker = null;
+let offscreenReady = false;
+let offscreenCreationPromise = null;
 let requestId = 0;
 
-const pendingRequests = new Map();
-
-/**
- * Create or reuse the ML worker.
- */
-function getWorker() {
-    if (worker) {
-        return worker;
+async function ensureOffscreenDocument() {
+    console.log("[Classifier] ensureOffscreenDocument called");
+    if (offscreenReady) {
+        console.log("[Classifier] offscreen already ready");
+        return;
+    }
+    if (offscreenCreationPromise) {
+         console.log("[Classifier] waiting for existing creation");
+        await offscreenCreationPromise;
+        return;
     }
 
-    worker = new Worker(
-        chrome.runtime.getURL("ml-worker.js"),
-        { type: "module" }
-    );
-
-    worker.onmessage = handleWorkerMessage;
-
-    worker.onerror = error => {
-        console.error("[Classifier] Worker error:", error);
-
-        for (const request of pendingRequests.values()) {
-            clearTimeout(request.timeout);
-            request.reject(error);
+    offscreenCreationPromise = (async () => {
+         console.log("[Classifier] checking offscreen contexts");
+        const contexts = await chrome.runtime.getContexts({
+            contextTypes: ["OFFSCREEN_DOCUMENT"],
+            documentUrls: [
+                chrome.runtime.getURL("./offscreen.html")
+            ]
+        });
+ console.log("[Classifier] offscreen contexts:", contexts.length);
+        if (contexts.length === 0) {
+            console.log("[Classifier] creating offscreen document");
+            await chrome.offscreen.createDocument({
+                url: "./offscreen.html",
+                reasons: ["WORKERS"],
+                justification:
+                    "Run the local ML model in a dedicated Web Worker."
+            });
+            console.log("[Classifier] offscreen document created");
         }
 
-        pendingRequests.clear();
-        worker = null;
-    };
+        offscreenReady = true;
+    })();
 
-    return worker;
-}
-
-/**
- * Resolve or reject a pending worker request.
- */
-function handleWorkerMessage(event) {
-    const {
-        requestId: id,
-        embedding,
-        modelVersion,
-        error
-    } = event.data;
-
-    const request = pendingRequests.get(id);
-
-    if (!request) {
-        return;
+    try {
+        await offscreenCreationPromise;
+    } finally {
+        offscreenCreationPromise = null;
     }
-
-    clearTimeout(request.timeout);
-    pendingRequests.delete(id);
-
-    if (error) {
-        request.reject(new Error(error));
-        return;
-    }
-
-    request.resolve({
-        embedding,
-        modelVersion
-    });
 }
-
-/**
- * Request an embedding from the ML worker.
- */
-function runEmbedding(text) {
+async function runEmbedding(text) {
+    console.log("[Classifier] runEmbedding called");
+    await ensureOffscreenDocument();
+    console.log("[Classifier] offscreen ready");
     const id = ++requestId;
-    const modelWorker = getWorker();
 
-    return new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => {
-            pendingRequests.delete(id);
-            reject(new Error("Embedding timeout"));
-        }, CLASSIFICATION_TIMEOUT);
+    console.log("[Classifier] sending embedding request", { requestId: id });
+    const response = await new Promise((resolve, reject) => {
+        const timeout = setTimeout(
+            () => reject(new Error("Embedding timed out after 120 seconds")),
+            EMBEDDING_TIMEOUT
+        );
 
-        pendingRequests.set(id, {
-            resolve,
-            reject,
-            timeout
-        });
-
-        modelWorker.postMessage({
-            type: "EMBED",
+        chrome.runtime.sendMessage({
+            type: "OFFSCREEN_EMBED",
             requestId: id,
             text
+        }).then(result => {
+            clearTimeout(timeout);
+            resolve(result);
+        }).catch(error => {
+            clearTimeout(timeout);
+            reject(error);
         });
     });
+
+    if (!response?.success || !Array.isArray(response.embedding)) {
+        throw new Error(response?.error || "Invalid embedding response");
+    }
+
+    console.log("[Classifier] embedding received", {
+        requestId: id,
+        dimensions: response.embedding.length,
+        modelVersion: response.modelVersion
+    });
+
+    return {
+        embedding: response.embedding,
+        modelVersion: response.modelVersion
+    };
 }
 
-/**
- * Build the text representation used for video embedding.
- */
 function buildVideoText(video) {
-    return [
-        `Title: ${video.title || ""}`,
-        `Description: ${video.description || ""}`,
-        `Channel: ${video.channelTitle || ""}`
-    ].join("\n");
+    return `Title: ${video.title || ""}`
+        // `Description: ${video.description || ""}`,
+        // `Channel: ${video.channelTitle || ""}`
+    
 }
 
-/**
- * Calculate cosine similarity between two embedding vectors.
- */
 function cosineSimilarity(a, b) {
     if (!a || !b || a.length !== b.length || a.length === 0) {
         throw new Error("Invalid embedding vectors");
@@ -146,44 +134,62 @@ function cosineSimilarity(a, b) {
         (Math.sqrt(magnitudeA) * Math.sqrt(magnitudeB));
 }
 
-/**
- * Get the cached requirement embedding or generate a new one.
- */
+
+const requirementPromises = new Map();
+
 async function getRequirementEmbedding(settings) {
     const cacheKey = [
         MODEL_VERSION,
         settings.policyHash
     ].join(":");
 
-    const cachedEmbedding =
-        await getPolicyEmbedding(cacheKey);
-
-    if (cachedEmbedding) {
-        return cachedEmbedding.embedding;
+    // Reuse an in-flight operation for the same policy.
+    if (requirementPromises.has(cacheKey)) {
+        return requirementPromises.get(cacheKey);
     }
 
-    const result =
-        await runEmbedding(settings.userRequirement);
+    const promise = (async () => {
+        const cached = await getPolicyEmbedding(cacheKey);
 
-    const embedding =
-        Array.from(result.embedding);
+        if (cached?.embeddings?.length) {
+            return cached.embeddings;
+        }
 
-    await savePolicyEmbedding(
-        cacheKey,
-        {
-            embedding,
+        const anchors = await expandRequirementToAnchors(
+            settings.userRequirement
+        );
+
+        const embeddings = [];
+
+        // Sequential execution avoids flooding the ML worker.
+        for (const anchor of anchors) {
+            const result = await runEmbedding(anchor);
+            embeddings.push(Array.from(result.embedding));
+        }
+
+        await savePolicyEmbedding(cacheKey, {
+            anchors,
+            embeddings,
             modelVersion: MODEL_VERSION,
             policyHash: settings.policyHash,
             createdAt: Date.now()
-        }
-    );
+        });
 
-    return embedding;
+        return embeddings;
+    })();
+
+    // Store the promise immediately, before other calls can start work.
+    requirementPromises.set(cacheKey, promise);
+
+    try {
+        return await promise;
+    } finally {
+        if (requirementPromises.get(cacheKey) === promise) {
+            requirementPromises.delete(cacheKey);
+        }
+    }
 }
 
-/**
- * Get the cached video embedding or generate a new one.
- */
 async function getVideoEmbeddingForVideo(video) {
     const cacheKey = [
         video.videoId,
@@ -218,9 +224,6 @@ async function getVideoEmbeddingForVideo(video) {
     return embedding;
 }
 
-/**
- * Convert similarity into the final filtering decision.
- */
 function evaluateSimilarity(similarity, settings) {
     const threshold =
         Number(settings.relevanceThreshold) ||
@@ -243,9 +246,6 @@ function evaluateSimilarity(similarity, settings) {
     };
 }
 
-/**
- * Classify one YouTube video against the current user requirement.
- */
 export async function classifyVideo(video, settings) {
     if (!video) {
         throw new Error("Video metadata is required");
@@ -286,24 +286,38 @@ export async function classifyVideo(video, settings) {
             classifiedAt: Date.now()
         };
     }
+console.log(
+    "[Classifier] starting embeddings:",
+    video.videoId
+);
 
     const [
-        requirementEmbedding,
+        requirementEmbeddings,
         videoEmbedding
     ] = await Promise.all([
         getRequirementEmbedding(settings),
         getVideoEmbeddingForVideo(video)
     ]);
+    console.log(
+        "[Classifier] embeddings completed:",
+        video.videoId,
+        "requirementEmbeddings:", requirementEmbeddings,
+        "videoEmbedding:", videoEmbedding.length
+    );
+let maxSimilarity= -Infinity;
+    for(const requirementEmbedding of requirementEmbeddings) {
 
     const similarity =
         cosineSimilarity(
             requirementEmbedding,
             videoEmbedding
         );
-
+    maxSimilarity = Math.max(maxSimilarity, similarity);
+    }
+console.log(video.title,  video.videoId, "similarity:", maxSimilarity);
     const policyResult =
         evaluateSimilarity(
-            similarity,
+            maxSimilarity,
             settings
         );
 
@@ -314,22 +328,25 @@ export async function classifyVideo(video, settings) {
     };
 }
 
-/**
- * Terminate the worker and reject pending inference requests.
- */
 export function clearClassifierCaches() {
-    for (const request of pendingRequests.values()) {
-        clearTimeout(request.timeout);
-        request.reject(
-            new Error("Classifier reset")
-        );
-    }
-
-    pendingRequests.clear();
-
-    if (worker) {
-        worker.terminate();
-        worker = null;
-    }
+    offscreenReady = false;
+    offscreenCreationPromise = null;
 }
 
+let expansionRequestId = 0;
+
+export async function expandRequirementToAnchors(requirement) {
+  await ensureOffscreenDocument();
+
+  const response = await chrome.runtime.sendMessage({
+    type: "OFFSCREEN_EXPAND_QUERY",
+    requestId: ++expansionRequestId,
+    requirement,
+  });
+
+  if (!response?.success) {
+    throw new Error(response?.error || "Query expansion failed");
+  }
+
+  return response.anchors;
+}

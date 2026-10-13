@@ -3,7 +3,7 @@ export default function HomePage() {
  const [settings, setSettings] = useState({
     enabled: true,
     userRequirement: "",
-    relevanceThreshold: 0.70,
+    relevanceThreshold: 0.16,
     lockUntil: null
 });
 const handleResetSettings = () => {
@@ -41,17 +41,18 @@ const handleResetSettings = () => {
     );
 };
 const [draftRequirement, setDraftRequirement] = useState("");
-const [draftThreshold, setDraftThreshold] = useState(0.70);
+const [draftThreshold, setDraftThreshold] = useState(0.16);
 
 const [lockDuration, setLockDuration] = useState(null);
-const isLocked = remainingMs > 0;
 const [stats, setStats] = useState({
     allowed: 0,
     blocked: 0
 });
 const [remainingMs, setRemainingMs] = useState(0);
 const [saving, setSaving] = useState(false);
-const [toast, setToast] = useState(null);
+
+const [toastMessage,setToastMessage]=useState("");
+const isLocked = remainingMs > 0;
 useEffect(() => {
     const update = () => {
         if (!settings.lockUntil) {
@@ -118,20 +119,7 @@ function formatRemaining(ms) {
     setTimeout(() => setToastMessage(null), 4000);
   };
 
-  const handleTopicsTextChange = (text) => {
-    setTopicsInput(text);
-    const lower = text.toLowerCase();
-    if (
-      lower.includes("want only") ||
-      lower.includes("only allow") ||
-      lower.includes("only show") ||
-      lower.includes("allow only") ||
-      lower.includes("show only") ||
-      lower.includes("only want")
-    ) {
-      setMode("FOCUS");
-    }
-  };
+
 
  const handleToggle = () => {
     if (isLocked) return;
@@ -192,12 +180,12 @@ const handleSave = () => {
 
   const handleResetStats = () => {
     chrome.runtime.sendMessage({ type: "RESET_STATS" }, () => {
-      setStats({ blocked: 0, allowed: 0, uncertain: 0 });
+      setStats({ blocked: 0, allowed: 0 });
     });
   };
 
   return (
-    <div className="w-[380px] min-h-[500px]  bg-[#09090b] text-white p-4 font-sans">
+    <div className="w-[380px] min-h-[500px]  bg-[#09090b] text-white p-4 font-sans scrollbar-hidden">
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
     <div>
@@ -231,7 +219,7 @@ const handleSave = () => {
     </button>
 </div>
 {/* --- TEXT INPUT BLOCK --- */}
-<div className="mb-5">
+<div className="mb-5 scrollbar-hidden">
     <label className="block text-[11px] font-medium text-zinc-400 uppercase tracking-wider mb-2">
         Your focus
     </label>
@@ -283,7 +271,7 @@ const handleSave = () => {
         </div>
       )}
       {/* --- SLIDER BLOCK --- */}
-<div className="bg-zinc-900/60 border border-zinc-800 rounded-xl p-3 mb-4">
+<div className="bg-zinc-900/60 border border-zinc-800 rounded-xl p-3 mb-4 ">
     <div className="flex items-center justify-between mb-2">
         <div>
             <p className="text-[11px] font-medium text-zinc-300">
@@ -300,15 +288,15 @@ const handleSave = () => {
         </span>
     </div>
 
-    <input
+    {/* <input
         type="range"
-        min="0.50"
-        max="0.90"
+        min="0.0"
+        max="0.100"
         step="0.01"
         value={draftThreshold}
         onChange={(e) => setDraftThreshold(e.target.value)}
         className="w-full accent-violet-500"
-    />
+    /> */}
 
     <div className="flex justify-between mt-1 text-[8px] text-zinc-600">
         <span>Broader</span>
@@ -316,7 +304,7 @@ const handleSave = () => {
     </div>
 </div>
       {/* Stats Display */}
-     <div className="grid grid-cols-2 gap-2 mb-4">
+     <div className="grid grid-cols-2 gap-2 mb-4 scrollbar-hidden">
     <div className="bg-zinc-900/60 border border-zinc-800 rounded-xl p-3">
         <p className="text-[9px] text-zinc-600 uppercase tracking-wider">
             Allowed
